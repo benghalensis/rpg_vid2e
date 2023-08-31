@@ -8,25 +8,20 @@ import cv2
 import tqdm
 import torch
 
-
-def is_valid_dir(subdirs, files):
-    return len(subdirs) == 1 and len(files) == 1 and "timestamps.txt" in files and "imgs" in subdirs
-
-
-def process_dir(outdir, indir, args):
-    print(f"Processing folder {indir}... Generating events in {outdir}")
-    os.makedirs(outdir, exist_ok=True)
+def process_dir(args):
+    print(f"Processing folder {args.image_directory}... Generating events in {args.output_dir}")
+    os.makedirs(args.output_dir, exist_ok=True)
 
     # constructor
     esim = esim_torch.ESIM(args.contrast_threshold_negative,
                            args.contrast_threshold_positive,
                            args.refractory_period_ns)
 
-    timestamps = np.genfromtxt(os.path.join(indir, "timestamps.txt"), dtype="float64")
+    timestamps = np.genfromtxt(args.imu_file_path, dtype="float64")
     timestamps_ns = (timestamps * 1e9).astype("int64")
     timestamps_ns = torch.from_numpy(timestamps_ns).cuda()
 
-    image_files = sorted(glob.glob(os.path.join(indir, "imgs", "*.png")))
+    image_files = sorted(glob.glob(os.path.join(args.image_directory, "*.png")))
     
     pbar = tqdm.tqdm(total=len(image_files)-1)
     num_events = 0
@@ -50,7 +45,7 @@ def process_dir(outdir, indir, args):
         num_events += len(sub_events['t'])
  
         # do something with the events
-        np.savez(os.path.join(outdir, "%010d.npz" % counter), **sub_events)
+        np.savez(os.path.join(args.output_dir, "%010d.npz" % counter), **sub_events)
         pbar.set_description(f"Num events generated: {num_events}")
         pbar.update(1)
         counter += 1
@@ -63,8 +58,8 @@ def parse_events(args):
         data = np.load(event)
         event_data.append(np.array([data['t'], data['x'], data['y'], data['p']]))
 
-    import pandas as pd
-    pd.to_csv(os.path.join(args.output_dir, "events.txt"), sep=' ', header=None)
+    # import pandas as pd
+    # pd.to_csv(os.path.join(args.output_dir, "events.txt"), sep=' ', header=None)
 
 
 if __name__ == "__main__":
@@ -72,30 +67,19 @@ if __name__ == "__main__":
     parser.add_argument("--contrast_threshold_negative", "-cn", type=float, default=0.2)
     parser.add_argument("--contrast_threshold_positive", "-cp", type=float, default=0.2)
     parser.add_argument("--refractory_period_ns", "-rp", type=int, default=500000)
-    parser.add_argument("--add_timestamp",  action="store_true")
     parser.add_argument("--image_fps",  default=1000, type=int)
-    parser.add_argument("--input_dir", "-i", default="", required=True)
+    parser.add_argument("--task",  default="gen")
+    parser.add_argument("--skip_one_in_every",  default=0, type=int)
+    parser.add_argument("--imu_file_path",  default="", type=str, required=True)
+    parser.add_argument("--image_directory",  default="", type=str, required=True)
     parser.add_argument("--output_dir", "-o", default="", required=True)
-    parser.add_argument("--task",  default="", required=True)
-    parser.add_argument("--skip_one_in_every",  default=0, type=int, required=True)
+    
     args = parser.parse_args()
 
 
     if args.task == "gen":
         print(f"Generating events with cn={args.contrast_threshold_negative}, cp={args.contrast_threshold_positive} and rp={args.refractory_period_ns}")
-        
-        # Add timestamps.txt if that is not present in the input directory
-        if args.add_timestamp:
-            timestamps_path = os.path.join(args.input_dir, 'timestamps.txt')
-            if not os.path.exists(os.path.join(args.input_dir, 'timestamps.txt')):
-                num_imgs = len(os.listdir(os.path.join(args.input_dir, "imgs")))
-                np.savetxt(timestamps_path, np.arange(start=0.0, stop=num_imgs/args.image_fps, step=1.0/args.image_fps))
-
-        for path, subdirs, files in os.walk(args.input_dir):
-            if is_valid_dir(subdirs, files):
-                output_folder = os.path.join(args.output_dir, os.path.relpath(path, args.input_dir))
-
-                process_dir(output_folder, path, args)
+        process_dir(args)
 
     if args.task == "parse":
         parse_events(args)

@@ -11,6 +11,8 @@ import torch
 def process_dir(args):
     print(f"Processing folder {args.image_directory}... Generating events in {args.output_dir}")
     os.makedirs(args.output_dir, exist_ok=True)
+    if args.visualize_events:
+        os.makedirs(os.path.join(args.output_dir, "event_visualization"), exist_ok=True)
 
     # constructor
     esim = esim_torch.ESIM(args.contrast_threshold_negative,
@@ -43,6 +45,12 @@ def process_dir(args):
 
         sub_events = {k: v.cpu() for k, v in sub_events.items()}    
         num_events += len(sub_events['t'])
+
+        if args.visualize_events:
+            image_color = np.stack([image,image,image],-1)
+            image_color[sub_events['y'], sub_events['x'], :] = 0
+            image_color[sub_events['y'], sub_events['x'], sub_events['p']] = 255
+            cv2.imwrite(os.path.join(args.output_dir, os.path.join("event_visualization", "%010d.png" % counter)), image_color)
  
         # do something with the events
         np.savez(os.path.join(args.output_dir, "%010d.npz" % counter), **sub_events)
@@ -73,6 +81,7 @@ if __name__ == "__main__":
     parser.add_argument("--imu_file_path",  default="", type=str, required=True)
     parser.add_argument("--image_directory",  default="", type=str, required=True)
     parser.add_argument("--output_dir", "-o", default="", required=True)
+    parser.add_argument("--visualize_events", action="store_true")
     
     args = parser.parse_args()
 

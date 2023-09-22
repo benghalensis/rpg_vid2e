@@ -41,7 +41,7 @@ if __name__ == "__main__":
     print("Generating events")
     events = esim.forward(log_images, timestamps_ns)
 
-    # render events 
+    # render events
     image = images[0]
     
     print("Plotting")

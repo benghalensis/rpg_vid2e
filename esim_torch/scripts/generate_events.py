@@ -8,22 +8,10 @@ import cv2
 import tqdm
 import torch
 
-def process_dir(args):
-    print(f"Processing folder {args.image_directory}... Generating events in {args.output_dir}")
-    os.makedirs(args.output_dir, exist_ok=True)
-    if args.visualize_events:
-        os.makedirs(os.path.join(args.output_dir, "event_visualization"), exist_ok=True)
-
-    # constructor
+def process(args, image_files, timestamp_ns, output_dir):        
     esim = esim_torch.ESIM(args.contrast_threshold_negative,
-                           args.contrast_threshold_positive,
-                           args.refractory_period_ns)
-
-    timestamps = np.genfromtxt(args.imu_file_path, dtype="float64")
-    timestamps_ns = (timestamps * 1e9).astype("int64")
-    timestamps_ns = torch.from_numpy(timestamps_ns).cuda()
-
-    image_files = sorted(glob.glob(os.path.join(args.image_directory, "*.png")))
+                        args.contrast_threshold_positive,
+                        args.refractory_period_ns)
     
     pbar = tqdm.tqdm(total=len(image_files)-1)
     num_events = 0
@@ -50,10 +38,10 @@ def process_dir(args):
             image_color = np.stack([image,image,image],-1)
             image_color[sub_events['y'], sub_events['x'], :] = 0
             image_color[sub_events['y'], sub_events['x'], sub_events['p']] = 255
-            cv2.imwrite(os.path.join(args.output_dir, os.path.join("event_visualization", "%010d.png" % counter)), image_color)
+            cv2.imwrite(os.path.join(output_dir, os.path.join("event_visualization", "%010d.png" % counter)), image_color)
  
         # do something with the events
-        np.savez(os.path.join(args.output_dir, "%010d.npz" % counter), **sub_events)
+        np.savez(os.path.join(output_dir, "%010d.npz" % counter), **sub_events)
         pbar.set_description(f"Num events generated: {num_events}")
         pbar.update(1)
         counter += 1
@@ -78,17 +66,62 @@ if __name__ == "__main__":
     parser.add_argument("--image_fps",  default=1000, type=int)
     parser.add_argument("--task",  default="gen")
     parser.add_argument("--skip_one_in_every",  default=0, type=int)
-    parser.add_argument("--imu_file_path",  default="", type=str, required=True)
-    parser.add_argument("--image_directory",  default="", type=str, required=True)
-    parser.add_argument("--output_dir", "-o", default="", required=True)
+    parser.add_argument("--imu_file_path",  default="", type=str)
+    parser.add_argument("--image_directory",  default="", type=str)
+    parser.add_argument("--output_dir", "-o", default="")
     parser.add_argument("--visualize_events", action="store_true")
+
+    parser.add_argument("--dataset_dir", type=str, default="")
+    parser.add_argument("--env_name", type=str, default="")
+    parser.add_argument("--data_folder_name", type=str, default="")
     
     args = parser.parse_args()
 
+    if args.task == "gen_simple":
+        # Create output directory 
+        print(f"Processing folder {args.image_directory}... Generating events in {args.output_dir}")
+        os.makedirs(args.output_dir, exist_ok=True)
 
-    if args.task == "gen":
+        if args.visualize_events:
+            os.makedirs(os.path.join(args.output_dir, "event_visualization"), exist_ok=True)       # constructor
+
+
+        timestamps = np.genfromtxt(args.imu_file_path, dtype="float64")
+        timestamps_ns = (timestamps * 1e9).astype("int64")
+        timestamps_ns = torch.from_numpy(timestamps_ns).cuda()
+
+        image_files = sorted(glob.glob(os.path.join(args.image_directory, "*.png")))
+
         print(f"Generating events with cn={args.contrast_threshold_negative}, cp={args.contrast_threshold_positive} and rp={args.refractory_period_ns}")
-        process_dir(args)
+        process(args, image_files, timestamps_ns, args.output_dir)
+
+    if args.task == "gen_tartanair":
+        dataset_dir = args.dataset_dir # /mnt/e/EventCamera
+        env_name = args.env_name
+        data_folder_name = args.data_folder_name
+
+        # Find the folders that start with P, like P000, P001
+        traj_folder_base_path = os.path.join(os.path.join(dataset_dir, env_name), data_folder_name)
+        traj_folder_list = [os.path.join(traj_folder_base_path, d) for d in os.listdir(traj_folder_base_path) if os.path.isdir(os.path.join(traj_folder_base_path, d)) and d.startswith('P')]
+        traj_folder_list.sort()
+        
+        for traj_folder in traj_folder_list:
+            print ('*** {} ***'.format(traj_folder))
+            images_directory = os.path.join(traj_folder, "image_lcam_front")
+            image_files = sorted(glob.glob(os.path.join(images_directory, "*.png")))
+            imu_time_filepath = os.path.join(traj_folder, os.path.join("events", "hf_time_pose_lcam_front.txt"))
+            events_output_directory = os.path.join(traj_folder, os.path.join("events", "events_output"))
+
+            os.makedirs(events_output_directory, exist_ok=True)
+
+            # IMU timestamps
+            timestamps = np.genfromtxt(imu_time_filepath, dtype="float64")
+            timestamps_ns = (timestamps * 1e9).astype("int64")
+            timestamps_ns = torch.from_numpy(timestamps_ns).cuda()
+
+            # Output directory
+            process(args, image_files, timestamps_ns, events_output_directory)
+
 
     if args.task == "parse":
         parse_events(args)

@@ -8,15 +8,44 @@ import cv2
 import tqdm
 import torch
 
-def process(args, image_files, timestamp_ns, output_dir):        
+class EventStorer():
+    def __init__(self, freq_mult, save_path):
+        self.freq_mult = freq_mult
+        self.save_path = save_path
+
+        self.event_counter = 0
+        self.save_counter = 0
+        self.accumulated_events = np.zeros(shape=(1,4), dtype=np.int64)
+
+    def append(self, sub_events):
+        self.accumulated_events = np.concatenate((self.accumulated_events, np.array([sub_events['t'].numpy(), 
+                                                                                     sub_events['x'].numpy(), 
+                                                                                     sub_events['y'].numpy(), 
+                                                                                     sub_events['p'].numpy()]).T))
+        self.event_counter += 1
+
+        if self.event_counter % self.freq_mult == 0:
+            self.save()
+
+    def save(self):
+        np.savez_compressed(os.path.join(self.save_path, "%06d_event_cam.npz" % self.save_counter), event_data=self.accumulated_events[1:])
+        self.accumulated_events = np.zeros(shape=(1,4), dtype=np.int64)
+        self.save_counter += 1
+
+def process(args, image_files, timestamp_ns, output_dir): 
+    # Initialize the ESIM event generator
     esim = esim_torch.ESIM(args.contrast_threshold_negative,
                         args.contrast_threshold_positive,
                         args.refractory_period_ns)
     
+    # Logging
     pbar = tqdm.tqdm(total=len(image_files)-1)
     num_events = 0
-
     counter = 0
+
+    # Initialize the event storer
+    event_storer = EventStorer(args.freq_mult, output_dir)
+
     for image_file, timestamp_ns in zip(image_files, timestamps_ns):
         if (counter % (args.skip_one_in_every + 1) != 0):
             counter += 1
@@ -40,11 +69,16 @@ def process(args, image_files, timestamp_ns, output_dir):
             image_color[sub_events['y'], sub_events['x'], sub_events['p']] = 255
             cv2.imwrite(os.path.join(output_dir, os.path.join("event_visualization", "%010d.png" % counter)), image_color)
  
-        # do something with the events
-        np.savez(os.path.join(output_dir, "%010d.npz" % counter), **sub_events)
+        # Accumulate and save events
+        event_storer.append(sub_events)
+
+        # Update the logger
         pbar.set_description(f"Num events generated: {num_events}")
         pbar.update(1)
         counter += 1
+
+    # Save the remaining events
+    event_storer.save()
 
 def parse_events(args):
     event_files = sorted(glob.glob(os.path.join(args.output_dir, "*.npz")))
@@ -53,10 +87,6 @@ def parse_events(args):
     for event in tqdm.tqdm(event_files):
         data = np.load(event)
         event_data.append(np.array([data['t'], data['x'], data['y'], data['p']]))
-
-    # import pandas as pd
-    # pd.to_csv(os.path.join(args.output_dir, "events.txt"), sep=' ', header=None)
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("""Generate events from a high frequency video stream""")
@@ -74,6 +104,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset_dir", type=str, default="")
     parser.add_argument("--env_name", type=str, default="")
     parser.add_argument("--data_folder_name", type=str, default="")
+    parser.add_argument("--freq_mult", type=int, default=100)
     
     args = parser.parse_args()
 
@@ -84,7 +115,6 @@ if __name__ == "__main__":
 
         if args.visualize_events:
             os.makedirs(os.path.join(args.output_dir, "event_visualization"), exist_ok=True)       # constructor
-
 
         timestamps = np.genfromtxt(args.imu_file_path, dtype="float64")
         timestamps_ns = (timestamps * 1e9).astype("int64")

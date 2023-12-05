@@ -33,11 +33,10 @@ class EventStorer():
         if (self.accumulated_events.shape[0] > 1):
             if (self.save_counter != np.round(self.accumulated_events[1,0]/10**8)):
                 print(f"Error: save_counter {self.save_counter} and accumulated_events {self.accumulated_events[1,0]/10**8} don't match")
-                breakpoint()
-        else:
-            print("Saving a file with no events, this might be because the images are the same")
-        np.savez_compressed(os.path.join(self.save_path, "%06d_event_cam.npz" % self.save_counter), event_data=self.accumulated_events[1:])
-        self.accumulated_events = np.zeros(shape=(1,4), dtype=np.int64)
+                return False
+            np.savez_compressed(os.path.join(self.save_path, "%06d_event_cam.npz" % self.save_counter), event_data=self.accumulated_events[1:])
+            self.accumulated_events = np.zeros(shape=(1,4), dtype=np.int64)
+        
         self.save_counter += 1
 
 def process(args, image_files, timestamps_ns, output_dir, image_start_idx=0, event_start_idx=0): 
@@ -69,8 +68,9 @@ def process(args, image_files, timestamps_ns, output_dir, image_start_idx=0, eve
 
         # Check if the image is blank
         if np.sum(image) == 0:
-            print(f"Blank image found {image_file}")
+            print(f"Error: Blank image found {image_file}")
             return False
+        
         log_image = np.log(image.astype("float32") / 255 + 1e-5)
         log_image = torch.from_numpy(log_image).cuda()
 
@@ -184,7 +184,6 @@ if __name__ == "__main__":
                     print(f"{events_output_directory} has an error please check")
                     continue
             else:
-                breakpoint()
                 os.makedirs(events_output_directory, exist_ok=True)
                 event_start_idx = 0
                 image_start_idx = 0

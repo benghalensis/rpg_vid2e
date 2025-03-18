@@ -7,6 +7,9 @@ import glob
 import cv2
 import tqdm
 import torch
+import yaml
+
+# from typing import Bool
 
 class EventStorer():
     def __init__(self, freq_mult, save_path, save_start_counter=0):
@@ -32,18 +35,26 @@ class EventStorer():
     def save(self):
         if (self.accumulated_events.shape[0] > 1):
             if (self.save_counter != np.round(self.accumulated_events[1,0]/10**8)):
-                print(f"Error: save_counter {self.save_counter} and accumulated_events {self.accumulated_events[1,0]/10**8} don't match")
+                print(f"Error: save_counter {self.save_counter} and accumulated_events {np.round(self.accumulated_events[1,0]/10**8)} don't match")
                 return False
             np.savez_compressed(os.path.join(self.save_path, "%06d_event_cam.npz" % self.save_counter), event_data=self.accumulated_events[1:])
             self.accumulated_events = np.zeros(shape=(1,4), dtype=np.int64)
         
         self.save_counter += 1
 
-def process(args, image_files, timestamps_ns, output_dir, image_start_idx=0, event_start_idx=0): 
+def process(contrast_threshold_negative, 
+            contrast_threshold_positive, 
+            refractory_period_ns, 
+            freq_mult, 
+            image_files, 
+            timestamps_ns, 
+            output_dir, 
+            skip_one_in_every: bool,
+            visualize_events: bool,
+            image_start_idx=0, 
+            event_start_idx=0): 
     # Initialize the ESIM event generator
-    esim = esim_torch.ESIM(args.contrast_threshold_negative,
-                        args.contrast_threshold_positive,
-                        args.refractory_period_ns)
+    esim = esim_torch.ESIM(contrast_threshold_negative, contrast_threshold_positive, refractory_period_ns)
     
     # Logging
     pbar = tqdm.tqdm(total=len(image_files)-image_start_idx)
@@ -51,7 +62,7 @@ def process(args, image_files, timestamps_ns, output_dir, image_start_idx=0, eve
     counter = 0
 
     # Initialize the event storer
-    event_storer = EventStorer(args.freq_mult, output_dir, event_start_idx)
+    event_storer = EventStorer(freq_mult, output_dir, event_start_idx)
 
     # Make sure that the len of image_files and the timestamps_ns is the same:
     if not len(image_files) == len(timestamps_ns):
@@ -61,10 +72,15 @@ def process(args, image_files, timestamps_ns, output_dir, image_start_idx=0, eve
         image_file = image_files[i]
         timestamp_ns = timestamps_ns[i]
 
-        if (counter % (args.skip_one_in_every + 1) != 0):
+        if (counter % (skip_one_in_every + 1) != 0):
             counter += 1
             continue
         image = cv2.imread(image_file, cv2.IMREAD_GRAYSCALE)
+
+        # Check if the image is None
+        if image is None:
+            print(f"Error: Image is None {image_file}")
+            return False
 
         # Check if the image is blank
         if np.sum(image) == 0:
@@ -81,7 +97,7 @@ def process(args, image_files, timestamps_ns, output_dir, image_start_idx=0, eve
             sub_events = {k: v.cpu() for k, v in sub_events.items()}    
             num_events += len(sub_events['t'])
 
-            if args.visualize_events:
+            if visualize_events:
                 image_color = np.stack([image,image,image],-1)
                 image_color[sub_events['y'], sub_events['x'], :] = 0
                 image_color[sub_events['y'], sub_events['x'], sub_events['p']] = 255
@@ -126,9 +142,10 @@ if __name__ == "__main__":
 
     parser.add_argument("--dataset_dir", type=str, default="")
     parser.add_argument("--env_name", type=str, default="")
-    parser.add_argument("--data_folder_name", type=str, default="")
+    parser.add_argument("--data_folder_name", type=str, default="Data_easy")
     parser.add_argument("--freq_mult", type=int, default=100)
-    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--folder_exist_action", type=str, choices={"continue", "skip", "overwrite"})
+    parser.add_argument("--events_output_dir_name", type=str, default="events_output")
     
     args = parser.parse_args()
 
@@ -151,23 +168,49 @@ if __name__ == "__main__":
 
     if args.task == "gen_tartanair":
         dataset_dir = args.dataset_dir # /mnt/e/EventCamera
+        # Check if dataset_dir exists
+        if not os.path.exists(dataset_dir):
+            print(f"Error: {dataset_dir} doesn't exist")
+            exit(1)
+
+        # Get the data folder path and check if it exists
         env_name = args.env_name
         data_folder_name = args.data_folder_name
+        data_folder_path = os.path.join(os.path.join(dataset_dir, env_name), data_folder_name)
+        if not os.path.exists(data_folder_path):
+            print(f"Error: {data_folder_path} doesn't exist")
+            exit(1)
 
         # Find the folders that start with P, like P000, P001
-        traj_folder_base_path = os.path.join(os.path.join(dataset_dir, env_name), data_folder_name)
-        traj_folder_list = [os.path.join(traj_folder_base_path, d) for d in os.listdir(traj_folder_base_path) if os.path.isdir(os.path.join(traj_folder_base_path, d)) and d.startswith('P')]
+        traj_folder_list = [os.path.join(data_folder_path, d) for d in os.listdir(data_folder_path) if os.path.isdir(os.path.join(data_folder_path, d)) and d.startswith('P')]
         traj_folder_list.sort()
         
         for traj_folder in traj_folder_list:
             print ('*** {} ***'.format(traj_folder))
+            # Read the event config from the config file
+            event_config_file = os.path.join(traj_folder, "event_generation_config.yaml")
+            if not os.path.exists(event_config_file):
+                print(f"Error: {event_config_file} doesn't exist")
+                continue
+            event_generation_config = yaml.safe_load(open(event_config_file, 'r'))
+
+            # Get the images directory used to generate the events
             images_directory = os.path.join(traj_folder, "image_lcam_front")
+            if not os.path.exists(images_directory):
+                print(f"Error: {images_directory} doesn't exist")
+                continue
             image_files = sorted(glob.glob(os.path.join(images_directory, "*.png")))
+
+            # Get the imu time file path and check if it exists
             imu_time_filepath = os.path.join(traj_folder, os.path.join("events", "hf_time_pose_lcam_front.txt"))
-            events_output_directory = os.path.join(traj_folder, os.path.join("events", "events_output"))
+            if not os.path.exists(imu_time_filepath):
+                print(f"Error: {imu_time_filepath} doesn't exist")
+                continue
+
+            events_output_directory = os.path.join(traj_folder, os.path.join("events", args.events_output_dir_name))
             num_events_files = len([i for i in os.listdir(events_output_directory) if i.endswith('event_cam.npz')]) if os.path.exists(events_output_directory) else 0            
 
-            if (num_events_files != 0) and not args.overwrite:
+            if (num_events_files != 0) and args.folder_exist_action == "continue":
                 hf_image_folder_path = os.path.join(traj_folder, "image_lcam_front")
                 num_hf_images = len([i for i in os.listdir(hf_image_folder_path) if i.endswith('.png')])
 
@@ -184,6 +227,10 @@ if __name__ == "__main__":
                     print(f"{events_output_directory} has an error please check")
                     continue
             else:
+                if args.folder_exist_action == "skip" and os.path.exists(events_output_directory):
+                    print(f"Skipping {events_output_directory}")
+                    continue
+
                 os.makedirs(events_output_directory, exist_ok=True)
                 event_start_idx = 0
                 image_start_idx = 0
@@ -194,8 +241,17 @@ if __name__ == "__main__":
             timestamps_ns = torch.from_numpy(timestamps_ns).cuda()
 
             # Output directory
-            process(args, image_files, timestamps_ns, events_output_directory, image_start_idx, event_start_idx)
-
+            process(contrast_threshold_negative=event_generation_config["contrast_threshold_negative"], 
+                    contrast_threshold_positive=event_generation_config["contrast_threshold_positive"],
+                    refractory_period_ns=event_generation_config["refractory_period_ns"][0],
+                    freq_mult=args.freq_mult, 
+                    image_files=image_files, 
+                    timestamps_ns=timestamps_ns, 
+                    output_dir=events_output_directory, 
+                    skip_one_in_every=args.skip_one_in_every,
+                    visualize_events=args.visualize_events,
+                    image_start_idx=image_start_idx, 
+                    event_start_idx=event_start_idx)
 
     if args.task == "parse":
         parse_events(args)
